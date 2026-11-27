@@ -66,6 +66,7 @@ const dropSchema = async (userId: string) => {
 const createSchema = async (userId: string) => {
     await sql`create user ${sql.raw(userId)} identified by oracle`.execute(sys);
     await sql`grant all privileges to ${sql.raw(userId)}`.execute(sys);
+    await sql`grant execute on sys.dbms_lock to ${sql.raw(userId)}`.execute(sys);
 };
 
 const dropTables = async (db: Kysely<DB>) => {
