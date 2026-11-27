@@ -101,9 +101,41 @@ const dialect = new OracleDialect({
 
 Kysely compiler options. Currently the only option available is `useNonQuotedIdentifiers` which controls how the compiled SQL represents the names of objects. Queries use quoted identifiers by default.
 
+Oracle returns the names of unquoted columns in uppercase. With `useNonQuotedIdentifiers`, a lowercase column selected without an alias gets a quoted alias with the name as written, so `select("name")` compiles to `select name "name"` and returns `{ name }`. Uppercase columns, `selectAll()`, and selections in `create view` and `create table ... as` are left as they are.
+
 ### `introspectorOptions`
 
 Kysely allows you to extract table, view, and schema metadata using the `Introspector` class. The Oracle dialect accepts additional introspection options to filter this metadata.
+
+## Migrations
+
+Kysely's `Migrator` works with the Oracle dialect:
+
+```typescript
+import { FileMigrationProvider, Migrator } from "kysely/migration";
+
+const migrator = new Migrator({
+    db,
+    provider: new FileMigrationProvider({ fs, path, migrationFolder }),
+});
+
+const { error, results } = await migrator.migrateToLatest();
+```
+
+The migrator takes a lock so that concurrent runs don't apply the same migration twice. The lock uses `DBMS_LOCK`, so the user running migrations needs to be granted access:
+
+```sql
+grant execute on sys.dbms_lock to <user>;
+```
+
+The lock is held by the database session, so it is released if the process dies. It's scoped to the schema and the migration lock table, so migrations in separate schemas don't wait for each other. Oracle 12.2 or later is required.
+
+Things to be aware of:
+
+- Oracle commits on every DDL statement, so migrations don't run in a transaction. If a migration fails part way, the statements before the failure stay applied.
+- The migrator commits when it finishes, so migrations are saved even without the `autoCommit` execute option.
+- With `useNonQuotedIdentifiers`, Kysely's default table names work as they are. Custom `migrationTableName` and `migrationLockTableName` values must be uppercase.
+- The migrator looks for its tables in the session's current schema. To keep them in another schema, set `migrationTableSchema` to the uppercase user name and include it in `introspectorOptions.schemas`.
 
 ## Extending Kysely
 
