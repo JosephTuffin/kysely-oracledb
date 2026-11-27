@@ -4,9 +4,13 @@ import {
     DatabaseMetadataOptions,
     Kysely,
     SchemaMetadata,
+    sql,
     TableMetadata,
 } from "kysely";
 import { DEFAULT_MIGRATION_LOCK_TABLE, DEFAULT_MIGRATION_TABLE } from "kysely/migration";
+import { CompilerOptions } from "./query-compiler.js";
+
+const INTERNAL_TABLES = [DEFAULT_MIGRATION_TABLE, DEFAULT_MIGRATION_LOCK_TABLE];
 
 export interface IntrospectorOptions {
     /**
@@ -36,10 +40,12 @@ export interface OracleTableMetadata extends TableMetadata {
 export class OracleIntrospector implements DatabaseIntrospector {
     readonly #db: Kysely<IntropsectorDB>;
     readonly #options: IntrospectorOptions;
+    readonly #useNonQuotedIdentifiers: boolean;
 
-    constructor(db: Kysely<any>, options: IntrospectorOptions = {}) {
+    constructor(db: Kysely<any>, options: IntrospectorOptions = {}, compilerOptions?: CompilerOptions) {
         this.#db = db;
         this.#options = options;
+        this.#useNonQuotedIdentifiers = compilerOptions?.useNonQuotedIdentifiers ?? false;
     }
 
     async getSchemas(): Promise<SchemaMetadata[]> {
@@ -59,17 +65,23 @@ export class OracleIntrospector implements DatabaseIntrospector {
         const tableFilter = this.#options.tables ?? [];
         const typeFilter = this.#options.type;
 
+        // Prevent the migrator from finding migration tables in other schemas when no `migrationTableSchema` is given.
+        const currentSchemaOnly = !!options?.withInternalKyselyTables && schemaFilter.length === 0;
+        const currentSchema = sql<string>`sys_context('USERENV', 'CURRENT_SCHEMA')`;
+
         const tablesQuery = this.#db
             .selectFrom("ALL_TABLES as tables")
             .innerJoin("ALL_TAB_COLUMNS as columns", (join) =>
                 join.onRef("columns.TABLE_NAME", "=", "tables.TABLE_NAME").onRef("columns.OWNER", "=", "tables.OWNER"),
             )
             .$if(schemaFilter.length > 0, (qb) => qb.where("tables.OWNER", "in", schemaFilter))
+            .$if(currentSchemaOnly, (qb) => qb.where("tables.OWNER", "=", currentSchema))
             .$if(tableFilter.length > 0, (qb) => qb.where("tables.TABLE_NAME", "in", tableFilter))
             .$if(!options?.withInternalKyselyTables, (qb) =>
-                qb
-                    .where("tables.TABLE_NAME", "!=", DEFAULT_MIGRATION_TABLE)
-                    .where("tables.TABLE_NAME", "!=", DEFAULT_MIGRATION_LOCK_TABLE),
+                qb.where("tables.TABLE_NAME", "not in", [
+                    ...INTERNAL_TABLES,
+                    ...INTERNAL_TABLES.map((table) => table.toUpperCase()),
+                ]),
             )
             .select((eb) => [
                 "tables.OWNER as schema",
@@ -91,6 +103,7 @@ export class OracleIntrospector implements DatabaseIntrospector {
                 join.onRef("columns.TABLE_NAME", "=", "views.VIEW_NAME").onRef("columns.OWNER", "=", "views.OWNER"),
             )
             .$if(schemaFilter.length > 0, (qb) => qb.where("views.OWNER", "in", schemaFilter))
+            .$if(currentSchemaOnly, (qb) => qb.where("views.OWNER", "=", currentSchema))
             .$if(tableFilter.length > 0, (qb) => qb.where("views.VIEW_NAME", "in", tableFilter))
             .select((eb) => [
                 "views.OWNER as schema",
@@ -127,7 +140,7 @@ export class OracleIntrospector implements DatabaseIntrospector {
             if (!tablesMap.has(tableKey)) {
                 tablesMap.set(tableKey, {
                     schema: column.schema,
-                    name: column.tableName,
+                    name: this.#getTableName(column.tableName, options),
                     isView: column.tableType === "view",
                     isForeign: false,
                     columns: [],
@@ -151,6 +164,18 @@ export class OracleIntrospector implements DatabaseIntrospector {
         }
 
         return Array.from(tablesMap.values());
+    }
+
+    /**
+     * The migrator looks for its tables by Kysely's lowercase default names. Without quoted identifiers
+     * Oracle stores them in uppercase, so report them under the names the migrator refers to them by.
+     */
+    #getTableName(tableName: string, options?: DatabaseMetadataOptions) {
+        if (!this.#useNonQuotedIdentifiers || !options?.withInternalKyselyTables) {
+            return tableName;
+        }
+
+        return INTERNAL_TABLES.find((table) => table.toUpperCase() === tableName) ?? tableName;
     }
 }
 

@@ -44,11 +44,11 @@ export class OracleDialect implements Dialect {
     }
 
     createAdapter(): OracleAdapter {
-        return new OracleAdapter();
+        return new OracleAdapter(this.#config.compilerOptions);
     }
 
     createIntrospector(db: Kysely<any>): OracleIntrospector {
-        return new OracleIntrospector(db, this.#config.introspectorOptions);
+        return new OracleIntrospector(db, this.#config.introspectorOptions, this.#config.compilerOptions);
     }
 
     createQueryCompiler(): OracleQueryCompiler {
