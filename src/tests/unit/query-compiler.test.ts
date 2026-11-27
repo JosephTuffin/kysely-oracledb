@@ -241,3 +241,65 @@ describe("withReturning types", () => {
             .$call(withReturning({ ID: oracledb.NUMBER }));
     });
 });
+
+describe("query compiler non-quoted selections", () => {
+    const db = createDb({ useNonQuotedIdentifiers: true }) as unknown as Kysely<any>;
+
+    it("should alias lowercase columns with the name as written", () => {
+        const query = db.selectFrom("kysely_migration").select(["name", "kysely_migration.timestamp"]).compile();
+
+        expect(query.sql).toBe('select name "name", kysely_migration.timestamp "timestamp" from kysely_migration');
+    });
+
+    it("should not alias uppercase columns, aliased columns or select all", () => {
+        const query = db.selectFrom("ITEMS").select(["ID", "NAME as itemName"]).compile();
+
+        expect(query.sql).toBe('select ID, NAME "itemName" from ITEMS');
+        expect(db.selectFrom("items").selectAll().compile().sql).toBe("select * from items");
+    });
+
+    it("should alias columns in subqueries", () => {
+        const query = db
+            .selectFrom("items")
+            .select("id")
+            .where("id", "in", db.selectFrom("item_tags").select("item_id"))
+            .compile();
+
+        expect(query.sql).toBe('select id "id" from items where id in (select item_id "item_id" from item_tags)');
+    });
+
+    it("should not alias columns in create view or create table as", () => {
+        const view = db.schema
+            .createView("active_items")
+            .as(db.selectFrom("items").select(["id", "name"]))
+            .compile();
+        const table = db.schema
+            .createTable("items_copy")
+            .as(db.selectFrom("items").select(["id", "name"]))
+            .compile();
+
+        expect(view.sql).toBe("create view active_items as select id, name from items");
+        expect(table.sql).toBe("create table items_copy as select id, name from items");
+    });
+
+    it("should not alias columns with quoted identifiers", () => {
+        const query = (createDb() as unknown as Kysely<any>).selectFrom("kysely_migration").select("name").compile();
+
+        expect(query.sql).toBe('select "name" from "kysely_migration"');
+    });
+});
+
+describe("adapter", () => {
+    it("should not create tables with if not exists", () => {
+        expect(new OracleAdapter().supportsCreateIfNotExists).toBe(false);
+    });
+
+    it("should require an uppercase lock table with non-quoted identifiers", async () => {
+        const adapter = new OracleAdapter({ useNonQuotedIdentifiers: true });
+        const db = createDb({ useNonQuotedIdentifiers: true });
+
+        await expect(
+            adapter.acquireMigrationLock(db, { lockTable: "migration_lock", lockRowId: "migration_lock" }),
+        ).rejects.toThrow('Migration lock table "migration_lock" must be uppercase with `useNonQuotedIdentifiers`');
+    });
+});

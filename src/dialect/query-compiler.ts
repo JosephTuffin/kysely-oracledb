@@ -2,7 +2,10 @@ import {
     AddColumnNode,
     AliasNode,
     AlterColumnNode,
+    ColumnNode,
     CompiledQuery,
+    CreateTableNode,
+    CreateViewNode,
     DefaultQueryCompiler,
     DropColumnNode,
     DropConstraintNode,
@@ -52,6 +55,7 @@ export class OracleQueryCompiler extends DefaultQueryCompiler {
     #useNonQuotedIdentifiers: boolean;
     #returningBinds?: ReturningBinds;
     #returningColumns?: string[];
+    #isInCreate = false;
 
     constructor(compilerOptions?: CompilerOptions) {
         super();
@@ -76,6 +80,50 @@ export class OracleQueryCompiler extends DefaultQueryCompiler {
         this.visitNode(node.alias);
         if (this.#useNonQuotedIdentifiers && !isTableAlias) {
             this.append('"');
+        }
+    }
+
+    /**
+     * Oracle returns columns without an alias in uppercase. With non-quoted identifiers, a column selected
+     * as `name` gets the alias `"name"` so its key matches the name as written, e.g. for Kysely's migrator.
+     * Selections in `create view` and `create table ... as` keep no alias, so their columns stay uppercase.
+     */
+    protected override visitSelection(node: SelectionNode): void {
+        const selection = node.selection;
+
+        if (
+            !this.#useNonQuotedIdentifiers ||
+            this.#isInCreate ||
+            !ReferenceNode.is(selection) ||
+            !ColumnNode.is(selection.column)
+        ) {
+            return super.visitSelection(node);
+        }
+
+        const name = selection.column.column.name;
+
+        super.visitSelection(node);
+
+        if (name !== name.toUpperCase()) {
+            this.append(` "${name.replace(/"/g, '""')}"`);
+        }
+    }
+
+    protected override visitCreateView(node: CreateViewNode): void {
+        this.#isInCreate = true;
+        try {
+            super.visitCreateView(node);
+        } finally {
+            this.#isInCreate = false;
+        }
+    }
+
+    protected override visitCreateTable(node: CreateTableNode): void {
+        this.#isInCreate = true;
+        try {
+            super.visitCreateTable(node);
+        } finally {
+            this.#isInCreate = false;
         }
     }
 
